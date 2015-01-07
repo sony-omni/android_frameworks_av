@@ -148,6 +148,7 @@ AudioTrack::AudioTrack(
       mIsTimed(false),
       mPreviousPriority(ANDROID_PRIORITY_NORMAL),
       mPreviousSchedulingGroup(SP_DEFAULT),
+      mUseSmallBuf(false),
       mPausedPosition(0)
 {
     mStatus = set(streamType, sampleRate, format, channelMask,
@@ -176,6 +177,7 @@ AudioTrack::AudioTrack(
       mIsTimed(false),
       mPreviousPriority(ANDROID_PRIORITY_NORMAL),
       mPreviousSchedulingGroup(SP_DEFAULT),
+      mUseSmallBuf(false),
       mPausedPosition(0)
 {
     mStatus = set(streamType, sampleRate, format, channelMask,
@@ -357,6 +359,10 @@ status_t AudioTrack::set(
     // only allow deep buffering for music stream type
     if (mStreamType != AUDIO_STREAM_MUSIC) {
         flags = (audio_output_flags_t)(flags &~AUDIO_OUTPUT_FLAG_DEEP_BUFFER);
+        if (flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) {
+            ALOGE("Offloading only allowed with music stream");
+            return BAD_VALUE; // To trigger fallback or let the client handle
+        }
     }
 
     if ((mStreamType == AUDIO_STREAM_VOICE_CALL) &&
@@ -431,6 +437,12 @@ status_t AudioTrack::set(
         mOffloadInfo = &mOffloadInfoCopy;
     } else {
         mOffloadInfo = NULL;
+    }
+
+    if (audio_is_offload_pcm(mFormat) &&
+         offloadInfo && offloadInfo->use_small_bufs) {
+        mUseSmallBuf = true;
+        ALOGI("Using small buffers for PCM offload");
     }
 
     mVolume[AUDIO_INTERLEAVE_LEFT] = 1.0f;
@@ -901,6 +913,13 @@ status_t AudioTrack::getPosition(uint32_t *position)
         if (isOffloaded_l() && ((mState == STATE_PAUSED) || (mState == STATE_PAUSED_STOPPING))) {
             ALOGV("getPosition called in paused state, return cached position %u", mPausedPosition);
             *position = mPausedPosition;
+            return NO_ERROR;
+        }
+        if (mUseSmallBuf) {
+            uint32_t tempPos = 0;
+            tempPos = (mState == STATE_STOPPED || mState == STATE_FLUSHED) ?
+                0 : updateAndGetPosition_l();
+            *position = (tempPos / (mChannelCount * audio_bytes_per_sample(mFormat)));
             return NO_ERROR;
         }
 
@@ -1680,36 +1699,6 @@ nsecs_t AudioTrack::processAudioBuffer()
 
     mLock.unlock();
 
-    if (waitStreamEnd) {
-        struct timespec timeout;
-        timeout.tv_sec = WAIT_STREAM_END_TIMEOUT_SEC;
-        timeout.tv_nsec = 0;
-
-        status_t status = proxy->waitStreamEndDone(&timeout);
-        switch (status) {
-        case NO_ERROR:
-        case DEAD_OBJECT:
-        case TIMED_OUT:
-            mCbf(EVENT_STREAM_END, mUserData, NULL);
-            {
-                AutoMutex lock(mLock);
-                // The previously assigned value of waitStreamEnd is no longer valid,
-                // since the mutex has been unlocked and either the callback handler
-                // or another thread could have re-started the AudioTrack during that time.
-                waitStreamEnd = mState == STATE_STOPPING;
-                if (waitStreamEnd) {
-                    mState = STATE_STOPPED;
-                    mReleased = 0;
-                }
-            }
-            if (waitStreamEnd && status != DEAD_OBJECT) {
-               return NS_INACTIVE;
-            }
-            break;
-        }
-        return 0;
-    }
-
     // perform callbacks while unlocked
     if (newUnderrun) {
         mCbf(EVENT_UNDERRUN, mUserData, NULL);
@@ -1759,7 +1748,7 @@ nsecs_t AudioTrack::processAudioBuffer()
         case NO_ERROR:
         case DEAD_OBJECT:
         case TIMED_OUT:
-            if (isOffloaded()) {
+            if (isOffloaded_l()) {
                 if (mCblk->mFlags & (CBLK_INVALID | CBLK_STREAM_FATAL_ERROR)) {
                     // will trigger EVENT_NEW_IAUDIOTRACK/STREAM_END in next iteration
                     return 0;
