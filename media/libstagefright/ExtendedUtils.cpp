@@ -1052,7 +1052,13 @@ sp<MediaExtractor> ExtendedUtils::MediaExtractor_CreateIfNeeded(sp<MediaExtracto
     bool amrwbAudio              = false;
     bool hevcVideo               = false;
     bool dolbyAudio              = false;
+    bool mpeg4Container          = false;
+    bool aacAudioTrack           = false;
     int  numOfTrack              = 0;
+
+    mpeg4Container = !strncasecmp(mime,
+                                MEDIA_MIMETYPE_CONTAINER_MPEG4,
+                                strlen(MEDIA_MIMETYPE_CONTAINER_MPEG4));
 
     if (defaultExt != NULL) {
         for (size_t trackItt = 0; trackItt < defaultExt->countTracks(); ++trackItt) {
@@ -1078,6 +1084,10 @@ sp<MediaExtractor> ExtendedUtils::MediaExtractor_CreateIfNeeded(sp<MediaExtracto
                                           MEDIA_MIMETYPE_AUDIO_AMR_WB,
                                           strlen(MEDIA_MIMETYPE_AUDIO_AMR_WB));
 
+                aacAudioTrack = !strncasecmp(mime.string(),
+                                          MEDIA_MIMETYPE_AUDIO_AAC,
+                                          strlen(MEDIA_MIMETYPE_AUDIO_AAC));
+
                 for (size_t i = 0; i < ARRAY_SIZE(dolbyFormats); i++) {
                     if (!strncasecmp(mime.string(), dolbyFormats[i], strlen(dolbyFormats[i]))) {
                         dolbyAudio = true;
@@ -1101,7 +1111,8 @@ sp<MediaExtractor> ExtendedUtils::MediaExtractor_CreateIfNeeded(sp<MediaExtracto
             bCheckExtendedExtractor = true;
         } else if (numOfTrack == 1) {
             if ((videoTrackFound) ||
-                (!videoTrackFound && !audioTrackFound)) {
+                (!videoTrackFound && !audioTrackFound) ||
+                (audioTrackFound && mpeg4Container && aacAudioTrack)) {
                 bCheckExtendedExtractor = true;
             }
         } else if (numOfTrack >= 2) {
@@ -1153,6 +1164,7 @@ sp<MediaExtractor> ExtendedUtils::MediaExtractor_CreateIfNeeded(sp<MediaExtracto
 #ifdef DOLBY_UDC
         MEDIA_MIMETYPE_AUDIO_EAC3_JOC,
 #endif
+        MEDIA_MIMETYPE_AUDIO_AAC,
     };
 
     for (size_t trackItt = 0; (trackItt < retExtExtractor->countTracks()); ++trackItt) {
@@ -1750,6 +1762,11 @@ void ExtendedUtils::RTSPStream::addSDES(int s, const sp<ABuffer> &buffer) {
 //return true if PCM offload is not enabled
 bool ExtendedUtils::pcmOffloadException(const char* const mime) {
     bool decision = false;
+
+    if (!mime) {
+        ALOGV("%s: no audio mime present, ignoring pcm offload", __func__);
+        return true;
+    }
 #if defined (PCM_OFFLOAD_ENABLED) || defined (PCM_OFFLOAD_ENABLED_24)
     const char * const ExceptionTable[] = {
         MEDIA_MIMETYPE_AUDIO_AMR_NB,
@@ -1777,6 +1794,92 @@ bool ExtendedUtils::pcmOffloadException(const char* const mime) {
     return decision;
 #endif
 }
+
+sp<MetaData> ExtendedUtils::createPCMMetaFromSource(
+                const sp<MetaData> &sMeta)
+{
+
+    sp<MetaData> tPCMMeta = new MetaData;
+    //hard code as RAW
+    tPCMMeta->setCString(kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_RAW);
+
+    //TODO: remove this hard coding and use the meta info, but the issue
+    //is that decoder does not provide this info for now
+    tPCMMeta->setInt32(kKeySampleBits, 16);
+
+    if (sMeta == NULL) {
+        ALOGV("%s: no meta returning dummy meta");
+        return tPCMMeta;
+    }
+
+    int32_t srate = -1;
+    if (!sMeta->findInt32(kKeySampleRate, &srate)) {
+        ALOGV("No sample rate");
+    }
+    tPCMMeta->setInt32(kKeySampleRate, srate);
+
+    int32_t cmask = 0;
+    if (!sMeta->findInt32(kKeyChannelMask, &cmask) || (cmask == 0)) {
+        ALOGI("No channel mask, try channel count");
+    }
+    int32_t channelCount = 0;
+    if (!sMeta->findInt32(kKeyChannelCount, &channelCount)) {
+        ALOGI("No channel count either");
+    } else {
+        //if channel mask is not set till now, use channel count
+        //to retrieve channel count
+        if (!cmask) {
+            cmask = audio_channel_out_mask_from_count(channelCount);
+        }
+    }
+    tPCMMeta->setInt32(kKeyChannelCount, channelCount);
+    tPCMMeta->setInt32(kKeyChannelMask, cmask);
+
+    int64_t duration = 0;
+    if (!sMeta->findInt64(kKeyDuration, &duration)) {
+        ALOGW("No duration in meta");
+    } else {
+        tPCMMeta->setInt64(kKeyDuration, duration);
+    }
+
+    int32_t bitRate = -1;
+    if (!sMeta->findInt32(kKeyBitRate, &bitRate)) {
+        ALOGW("No bitrate info");
+    } else {
+        tPCMMeta->setInt32(kKeyBitRate, bitRate);
+    }
+
+    return tPCMMeta;
+}
+
+void ExtendedUtils::overWriteAudioFormat(
+                sp<AMessage> &dst, const sp<AMessage> &src)
+{
+    int32_t dchannels = 0;
+    int32_t schannels = 0;
+    int32_t drate = 0;
+    int32_t srate = 0;
+
+    dst->findInt32("channel-count", &dchannels);
+    src->findInt32("channel-count", &schannels);
+
+    dst->findInt32("sample-rate", &drate);
+    src->findInt32("sample-rate", &srate);
+
+    ALOGI("channel count src: %d dst: %d", dchannels, schannels);
+    ALOGI("sample rate src: %d dst:%d ", drate, srate);
+
+    if (schannels && dchannels != schannels) {
+        dst->setInt32("channel-count", schannels);
+    }
+
+    if (srate && drate != srate) {
+        dst->setInt32("sample-rate", srate);
+    }
+
+    return;
+}
+
 }
 #else //ENABLE_AV_ENHANCEMENTS
 
@@ -1785,6 +1888,8 @@ namespace android {
 sp<MetaData> ExtendedUtils::updatePCMFormatAndBitwidth(
                 sp<MediaSource> &audioSource, bool offloadAudio)
 {
+    ARG_TOUCH(audioSource);
+    ARG_TOUCH(offloadAudio);
     sp<MetaData> tempMetadata = new MetaData;
     return tempMetadata;
 }
@@ -2027,6 +2132,21 @@ void ExtendedUtils::RTSPStream::addSDES(int s, const sp<ABuffer> &buffer) {}
 bool ExtendedUtils::pcmOffloadException(const char* const mime) {
     ARG_TOUCH(mime);
     return true;
+}
+
+sp<MetaData> ExtendedUtils::createPCMMetaFromSource(
+                const sp<MetaData> &sMeta) {
+    ARG_TOUCH(sMeta);
+    sp<MetaData> tPCMMeta = new MetaData;
+    return tPCMMeta;
+}
+
+void ExtendedUtils::overWriteAudioFormat(
+                sp<AMessage> &dst, const sp<AMessage> &src)
+{
+    ARG_TOUCH(dst);
+    ARG_TOUCH(src);
+    return;
 }
 
 } // namespace android

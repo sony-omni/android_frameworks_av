@@ -2769,19 +2769,26 @@ bool AudioPolicyManager::isOffloadSupported(const audio_offload_info_t& offloadI
     if (audio_is_offload_pcm(offloadInfo.format)) {
         bool prop_enabled = false;
 #ifdef PCM_OFFLOAD_ENABLED_16
-        if(property_get("audio.offload.pcm.16bit.enable", propValue, NULL))
+        if ((AUDIO_FORMAT_PCM_16_BIT_OFFLOAD == offloadInfo.format) &&
+               property_get("audio.offload.pcm.16bit.enable", propValue, NULL)) {
             prop_enabled = atoi(propValue) || !strncmp("true", propValue, 4);
-#elif PCM_OFFLOAD_ENABLED_24
-        if(property_get("audio.offload.pcm.24bit.enable", propValue, NULL))
-            prop_enabled = atoi(propValue) || !strncmp("true", propValue, 4);
+        }
 #endif
+
+#ifdef PCM_OFFLOAD_ENABLED_24
+        if ((AUDIO_FORMAT_PCM_24_BIT_OFFLOAD == offloadInfo.format) &&
+               property_get("audio.offload.pcm.24bit.enable", propValue, NULL)) {
+            prop_enabled = atoi(propValue) || !strncmp("true", propValue, 4);
+        }
+#endif
+
         if (prop_enabled) {
             ALOGI("PCM offload property is enabled");
             pcmOffload = true;
         }
 
         if (!pcmOffload) {
-            ALOGD("PCM offload disabled by property audio.offload.pcm.enable");
+            ALOGD("system property not enabled for PCM offload format[%x]",offloadInfo.format);
             return false;
         }
     }
@@ -4744,8 +4751,7 @@ audio_devices_t AudioPolicyManager::getNewOutputDevice(audio_io_handle_t output,
                 && (!primaryOutputDesc->isStrategyActive(STRATEGY_MEDIA)))) {
         device = getDeviceForStrategy(STRATEGY_SONIFICATION, fromCache);
     } else if (outputDesc->isStrategyActive(STRATEGY_SONIFICATION_RESPECTFUL) ||
-                (primaryOutputDesc->isStrategyActive(STRATEGY_SONIFICATION_RESPECTFUL)
-                && (!primaryOutputDesc->isStrategyActive(STRATEGY_MEDIA)))) {
+               primaryOutputDesc->isStrategyActive(STRATEGY_SONIFICATION_RESPECTFUL)) {
         device = getDeviceForStrategy(STRATEGY_SONIFICATION_RESPECTFUL, fromCache);
     } else if (outputDesc->isStrategyActive(STRATEGY_MEDIA)) {
         device = getDeviceForStrategy(STRATEGY_MEDIA, fromCache);
@@ -5316,24 +5322,21 @@ uint32_t AudioPolicyManager::setOutputDevice(audio_io_handle_t output,
 
     ALOGV("setOutputDevice() prevDevice %04x", prevDevice);
 
-    // Device Routing has not been triggered in the following scenario:
-    // Start playback on HDMI/USB hs, pause it, unplug and plug HDMI
-    //cable/usb hs, resume playback, music starts on speaker. To avoid
-    //this, update mDevice even if device is 0 which triggers routing when
-    // HDMI cable/usb hs is reconnected
-    if (device != AUDIO_DEVICE_NONE ||
-        prevDevice == AUDIO_DEVICE_OUT_AUX_DIGITAL ||
-        prevDevice == AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET) {
+    if (device != AUDIO_DEVICE_NONE) {
         outputDesc->mDevice = device;
     }
     muteWaitMs = checkDeviceMuteStrategies(outputDesc, prevDevice, delayMs);
 
     // Do not change the routing if:
-    //  - the requested device is AUDIO_DEVICE_NONE
-    //  - the requested device is the same as current device and force is not specified.
+    //      the requested device is AUDIO_DEVICE_NONE
+    //      OR the requested device is the same as current device
+    //  AND force is not specified
+    //  AND the output is connected by a valid audio patch.
     // Doing this check here allows the caller to call setOutputDevice() without conditions
-    if ((device == AUDIO_DEVICE_NONE || device == prevDevice) && !force) {
-        ALOGV("setOutputDevice() setting same device %04x or null device for output %d", device, output);
+    if ((device == AUDIO_DEVICE_NONE || device == prevDevice) && !force &&
+            outputDesc->mPatchHandle != 0) {
+        ALOGV("setOutputDevice() setting same device %04x or null device for output %d",
+              device, output);
         return muteWaitMs;
     }
 
@@ -6130,7 +6133,7 @@ status_t AudioPolicyManager::checkAndSetVolume(audio_stream_type_t stream,
         }
 
         if (voiceVolume != mLastVoiceVolume && ((output == mPrimaryOutput) ||
-            isDirectOutput(output))) {
+            isDirectOutput(output) || device & AUDIO_DEVICE_OUT_ALL_USB)) {
             mpClientInterface->setVoiceVolume(voiceVolume, delayMs);
             mLastVoiceVolume = voiceVolume;
         }
@@ -7641,7 +7644,7 @@ bool AudioPolicyManager::IOProfile::isCompatibleProfile(audio_devices_t device,
 {
     const bool isPlaybackThread = mType == AUDIO_PORT_TYPE_MIX && mRole == AUDIO_PORT_ROLE_SOURCE;
     const bool isRecordThread = mType == AUDIO_PORT_TYPE_MIX && mRole == AUDIO_PORT_ROLE_SINK;
-    ALOGE("isPlaybackThread %d,isRecordThread %d", isPlaybackThread, isRecordThread);
+    ALOGV("isPlaybackThread %d,isRecordThread %d", isPlaybackThread, isRecordThread);
     ALOG_ASSERT(isPlaybackThread != isRecordThread);
 
     if ((mSupportedDevices.types() & device) != device) {
