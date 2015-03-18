@@ -147,8 +147,8 @@ LOCAL_STATIC_LIBRARIES := \
         libmedia_helper
 
 ifeq ($(TARGET_USES_QCOM_BSP), true)
-ifneq ($(TARGET_QCOM_MEDIA_VARIANT),)
-    LOCAL_C_INCLUDES += $(TOP)/hardware/qcom/display-$(TARGET_QCOM_MEDIA_VARIANT)/libgralloc
+ifneq ($(TARGET_QCOM_DISPLAY_VARIANT),)
+    LOCAL_C_INCLUDES += $(TOP)/hardware/qcom/display-$(TARGET_QCOM_DISPLAY_VARIANT)/libgralloc
 else
     LOCAL_C_INCLUDES += hardware/qcom/display/libgralloc
 endif
@@ -178,7 +178,11 @@ else
 endif
 ifeq ($(strip $(AUDIO_FEATURE_ENABLED_PCM_OFFLOAD)),true)
        LOCAL_CFLAGS     += -DPCM_OFFLOAD_ENABLED
+ifneq ($(TARGET_QCOM_MEDIA_VARIANT),)
+       LOCAL_C_INCLUDES += $(TOP)/hardware/qcom/media-$(TARGET_QCOM_MEDIA_VARIANT)/mm-core/inc
+else
        LOCAL_C_INCLUDES += $(TOP)/hardware/qcom/media/mm-core/inc
+endif
 endif
 endif
 endif

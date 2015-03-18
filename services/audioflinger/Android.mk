@@ -118,7 +118,11 @@ endif
 ifeq ($(strip $(AUDIO_FEATURE_ENABLED_HW_ACCELERATED_EFFECTS)), true)
 LOCAL_CFLAGS += -DHW_ACC_EFFECTS
 LOCAL_WHOLE_STATIC_LIBRARIES := libhwacceffectswrapper
+ifneq ($(TARGET_QCOM_AUDIO_VARIANT),)
+LOCAL_C_INCLUDES += hardware/qcom/audio-$(TARGET_QCOM_AUDIO_VARIANT)/post_proc
+else
 LOCAL_C_INCLUDES += hardware/qcom/audio/post_proc
+endif
 ifeq ($(strip $(AUDIO_FEATURE_ENABLED_DTS_EAGLE)), true)
 LOCAL_CFLAGS += -DHW_ACC_HPX
 endif
