@@ -1140,7 +1140,7 @@ status_t ACodec::setComponentRole(
         { MEDIA_MIMETYPE_AUDIO_EVRC,
             "audio_decoder.evrchw", "audio_encoder.evrc" },
         { MEDIA_MIMETYPE_AUDIO_QCELP,
-            "audio_decoder,qcelp13Hw", "audio_encoder.qcelp13" },
+            "audio_decoder.qcelp13Hw", "audio_encoder.qcelp13" },
 #ifdef DOLBY_UDC
         { MEDIA_MIMETYPE_AUDIO_AC3,
             "audio_decoder.ac3", NULL },
@@ -2041,10 +2041,17 @@ status_t ACodec::setupFlacCodec(
         }
     }
 
+#ifdef QTI_FLAC_DECODER
     return setupRawAudioFormat(
             kPortIndexInput,
             sampleRate,
             numChannels);
+#else
+    return setupRawAudioFormat(
+            encoder ? kPortIndexInput : kPortIndexOutput,
+            sampleRate,
+            numChannels);
+#endif
 }
 
 status_t ACodec::setupRawAudioFormat(
