@@ -185,7 +185,11 @@ else
 endif
 ifeq ($(strip $(AUDIO_FEATURE_ENABLED_PCM_OFFLOAD)),true)
        LOCAL_CFLAGS     += -DPCM_OFFLOAD_ENABLED
+ifneq ($(TARGET_QCOM_MEDIA_VARIANT),)
+       LOCAL_C_INCLUDES += $(TOP)/hardware/qcom/media-$(TARGET_QCOM_MEDIA_VARIANT)/mm-core/inc
+else
        LOCAL_C_INCLUDES += $(TOP)/hardware/qcom/media/mm-core/inc
+endif
 endif
 endif
 endif
