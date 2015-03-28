@@ -25,6 +25,7 @@
 #include "M3UParser.h"
 
 #include "include/avc_utils.h"
+#include "include/ExtendedUtils.h"
 #include "include/HTTPBase.h"
 #include "include/ID3.h"
 #include "mpeg2ts/AnotherPacketSource.h"
@@ -626,7 +627,7 @@ void PlaylistFetcher::onMonitorQueue() {
         durationToBufferUs = kMinBufferedDurationUs;
     }
 
-    int64_t bufferedDurationUs = 0ll;
+    int64_t bufferedDurationUs = -1ll;
     status_t finalResult = NOT_ENOUGH_DATA;
     if (mStreamTypeMask == LiveSession::STREAMTYPE_SUBTITLES) {
         sp<AnotherPacketSource> packetSource =
@@ -636,7 +637,10 @@ void PlaylistFetcher::onMonitorQueue() {
                 packetSource->getBufferedDurationUs(&finalResult);
         finalResult = OK;
     } else {
-        // Use max stream duration to prevent us from waiting on a non-existent stream;
+        // In steady-state playback, the TS parser will ensure that mStreamTypeMask
+        // correctly reflects the streams that are present. In this case, use min stream
+        // duration to ensure that all streams are buffered. Otherwise (when mStartup is set)
+        // use max stream duration to prevent us from waiting on a non-existent stream;
         // when we cannot make out from the manifest what streams are included in a playlist
         // we might assume extra streams.
         for (size_t i = 0; i < mPacketSources.size(); ++i) {
@@ -646,10 +650,18 @@ void PlaylistFetcher::onMonitorQueue() {
 
             int64_t bufferedStreamDurationUs =
                 mPacketSources.valueAt(i)->getBufferedDurationUs(&finalResult);
-            ALOGV("buffered %" PRId64 " for stream %d",
-                    bufferedStreamDurationUs, mPacketSources.keyAt(i));
-            if (bufferedStreamDurationUs > bufferedDurationUs) {
-                bufferedDurationUs = bufferedStreamDurationUs;
+            ALOGV("buffered %" PRId64 " for stream %d (startup = %s)",
+                    bufferedStreamDurationUs, mPacketSources.keyAt(i),
+                    mStartup ? "true" : "false");
+            if (mStartup) {
+                if (bufferedStreamDurationUs > bufferedDurationUs) {
+                    bufferedDurationUs = bufferedStreamDurationUs;
+                }
+            } else {
+                if (bufferedDurationUs < 0 ||
+                        bufferedStreamDurationUs < bufferedDurationUs) {
+                    bufferedDurationUs = bufferedStreamDurationUs;
+                }
             }
         }
     }
@@ -894,7 +906,7 @@ void PlaylistFetcher::onDownloadNext() {
     ALOGV("fetching segment %d from (%d .. %d)",
           mSeqNumber, firstSeqNumberInPlaylist, lastSeqNumberInPlaylist);
 
-    ALOGV("fetching '%s'", uri.c_str());
+    ALOGI("fetching '%s'", uri.c_str());
 
     sp<DataSource> source;
     sp<ABuffer> buffer, tsBuffer;
@@ -1283,14 +1295,19 @@ status_t PlaylistFetcher::extractAndQueueAccessUnitsFromTs(const sp<ABuffer> &bu
                     const char *mime;
                     sp<MetaData> format  = source->getFormat();
                     bool isAvc = false;
-                    if (format != NULL && format->findCString(kKeyMIMEType, &mime)
-                            && !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_AVC)) {
-                        isAvc = true;
+                    bool isHevc = false;
+                    if (format != NULL && format->findCString(kKeyMIMEType, &mime)) {
+                        if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_AVC)) {
+                            isAvc = true;
+                        } else if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_HEVC)) {
+                            isHevc = true;
+                        }
                     }
-                    if (isAvc && IsIDR(accessUnit)) {
+                    if ((isAvc && IsIDR(accessUnit)) || (isHevc &&
+                            ExtendedUtils::IsHevcIDR(accessUnit))) {
                         mVideoBuffer->clear();
                     }
-                    if (isAvc) {
+                    if (isAvc || isHevc) {
                         mVideoBuffer->queueAccessUnit(accessUnit);
                     }
 
